@@ -10,7 +10,7 @@ import threading
 from telebot import TeleBot, types
 
 # === Bot sozlamalari ===
-BOT_TOKEN = "8356760594:AAFjk8-NI1p3EsWe5xCkB57gt8M3f8Fodq8"   # <-- O'zingizning tokeningizni kiriting
+BOT_TOKEN = "7549325175:AAF9teSMeEffbIG3Z0SKfhf1WGHWmYr2Cg8"   # <-- O'zingizning tokeningizni kiriting
 ADMIN_ID = 7661335658          # <-- Admin ID
 
 # === Doimiylar ===
