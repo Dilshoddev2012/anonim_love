@@ -1,23 +1,22 @@
 # -*- coding: utf-8 -*-
-# Anonim Love bot — VPS uchun
-# Kutubxona: pyTelegramBotAPI (telebot) + Gemini (AI javoblari uchun)
+
+# Anonim Love bot — PythonAnywhere uchun moslangan kod
+# Kutubxona: pyTelegramBotAPI (telebot)
+# Muallif: ChatGPT (sozlash: foydalanuvchi talablari bo‘yicha)
 
 import json
 import os
 import threading
 from telebot import TeleBot, types
-import google.generativeai as genai
 
-# === Sozlamalar ===
-BOT_TOKEN = "7549325175:AAF9teSMeEffbIG3Z0SKfhf1WGHWmYr2Cg8"   # BotFather'dan olgan token
-ADMIN_ID = 7661335658        # Admin ID
-GEMINI_API_KEY = "AIzaSyADSb9q_JshLD2XfeXAjXHeKWyMgyNwcK8"  # Gemini API kalit
-
-genai.configure(api_key=GEMINI_API_KEY)
+# === Bot sozlamalari ===
+BOT_TOKEN = "7549325175:AAF9teSMeEffbIG3Z0SKfhf1WGHWmYr2Cg8"   # <-- O'zingizning tokeningizni kiriting
+ADMIN_ID = 7661335658          # <-- Admin ID
 
 # === Doimiylar ===
 DB_FILE = "anon_love_db.json"
 LOCK = threading.RLock()
+
 partners = {}  # user_id -> partner_id
 waiting = {"male": [], "female": []}
 admin_state = {}  # admin vaqtinchalik holati
@@ -62,33 +61,30 @@ def end_chat_for(uid, bot: TeleBot, notify=True):
     if uid not in partners:
         return
     partner_id = partners.pop(uid)
-
-    # AI bilan bo‘lsa, faqat foydalanuvchini chiqaramiz
-    if partner_id != 0:
-        if partners.get(partner_id) == uid:
-            partners.pop(partner_id, None)
-
+    if partners.get(partner_id) == uid:
+        partners.pop(partner_id, None)
     if notify:
         try:
             bot.send_message(uid, "Suhbat tugatildi.", reply_markup=main_menu(uid))
         except:
             pass
-        if partner_id != 0:
-            try:
-                bot.send_message(partner_id, "Suhbatdoshingiz chiqib ketdi.", reply_markup=main_menu(partner_id))
-            except:
-                pass
+        try:
+            bot.send_message(partner_id, "Suhbatdoshingiz chiqib ketdi.", reply_markup=main_menu(partner_id))
+        except:
+            pass
 
-# === Matching (AI qo‘shilgan) ===
 def try_match(user_id, db, bot: TeleBot):
     if is_in_chat(user_id):
         bot.send_message(user_id, "Siz allaqachon suhbatasiz.")
         return
+
     gender = get_gender(db, user_id)
     if gender not in ("male", "female"):
         ask_gender(bot, user_id)
         return
+
     preferred = "female" if gender == "male" else "male"
+
     with LOCK:
         partner_id = None
         if waiting[preferred]:
@@ -96,20 +92,15 @@ def try_match(user_id, db, bot: TeleBot):
         elif waiting[gender]:
             partner_id = waiting[gender].pop(0)
         else:
-            # Agar foydalanuvchi topilmasa — AI qizga ulash
-            partner_id = 0
-            partners[user_id] = partner_id
-            partners[partner_id] = user_id
-            bot.send_message(user_id, "Sizga suhbatdosh topildi! 😊 (Shahlo bilan)", reply_markup=chat_menu())
+            waiting[gender].append(user_id)
+            bot.send_message(user_id, "Mos suhbatdosh qidirilmoqda...")
             return
 
         partners[user_id] = partner_id
-        if partner_id != 0:
-            partners[partner_id] = user_id
+        partners[partner_id] = user_id
 
     bot.send_message(user_id, "Sizga suhbatdosh topildi! 😊", reply_markup=chat_menu())
-    if partner_id != 0:
-        bot.send_message(partner_id, "Sizga suhbatdosh topildi! 😊", reply_markup=chat_menu())
+    bot.send_message(partner_id, "Sizga suhbatdosh topildi! 😊", reply_markup=chat_menu())
 
 def ask_gender(bot: TeleBot, uid):
     ikb = types.InlineKeyboardMarkup()
@@ -131,7 +122,6 @@ def main_menu(uid):
 def chat_menu():
     kb = types.ReplyKeyboardMarkup(resize_keyboard=True)
     kb.add(types.KeyboardButton("⛔️ Suhbatni tugatish"))
-    kb.add(types.KeyboardButton("🚨 Shikoyat qilish"))
     return kb
 
 def admin_menu():
@@ -170,19 +160,39 @@ def on_gender_callback(call: types.CallbackQuery):
     bot.edit_message_reply_markup(call.message.chat.id, call.message.message_id, reply_markup=None)
     bot.send_message(uid, "Ajoyib! Endi suhbatni boshlashingiz mumkin.", reply_markup=main_menu(uid))
 
-# === AI Javobchi (Qiz bola rolida) ===
-def ai_girl_response(user_text: str) -> str:
-    try:
-        model = genai.GenerativeModel("gemini-1.5-flash")
-        response = model.generate_content(
-            f"Sening isming Shahlo. Sen yosh qiz bolasiz. "
-            f"Samimiy, mehribon, qizlarga xos ohangda suhbat qil. "
-            f"Hech qachon AI ekaningni aytma.\n\n"
-            f"Foydalanuvchi: {user_text}\nShahlo:"
-        )
-        return response.text.strip()
-    except Exception as e:
-        return "Kechirasiz, hozircha javob bera olmayapman."
+# === Admin ===
+@bot.message_handler(commands=["admin"])
+def cmd_admin(message):
+    if message.from_user.id != ADMIN_ID:
+        return bot.reply_to(message, "Faqat admin uchun.")
+    bot.send_message(message.chat.id, "Admin paneli:", reply_markup=admin_menu())
+
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "📊 Statistika")
+def admin_stats(message):
+    total = len(db.get("users", {}))
+    males = sum(1 for u in db["users"].values() if u.get("gender") == "male")
+    females = sum(1 for u in db["users"].values() if u.get("gender") == "female")
+    pairs = len({min(a, b) for a, b in partners.items() if partners.get(b) == a})
+    bot.reply_to(message, f"Statistika:\nJami: {total}\nErkak: {males}\nAyol: {females}\nFaol juftliklar: {pairs}")
+
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and m.text == "📣 Reklama joylash")
+def admin_broadcast_prompt(message):
+    admin_state[message.from_user.id] = "broadcast_wait"
+    bot.reply_to(message, "Reklama xabarini yuboring.")
+
+@bot.message_handler(func=lambda m: m.from_user.id == ADMIN_ID and admin_state.get(m.from_user.id) == "broadcast_wait", content_types=['text','photo','video','document','audio','voice','sticker','animation'])
+def admin_broadcast_do(message):
+    admin_state.pop(message.from_user.id, None)
+    users = list(db.get("users", {}).keys())
+    sent, failed = 0, 0
+    for uid_str in users:
+        try:
+            bot.copy_message(int(uid_str), message.chat.id, message.message_id)
+            sent += 1
+        except:
+            failed += 1
+            continue
+    bot.send_message(message.chat.id, f"Tayyor ✅\nYuborildi: {sent}\nXato: {failed}")
 
 # === Tugmalar ===
 @bot.message_handler(func=lambda m: m.text == "🎯 Suhbatni boshlash")
@@ -193,38 +203,21 @@ def start_chat_btn(message):
 def end_chat_btn(message):
     end_chat_for(message.from_user.id, bot)
 
-@bot.message_handler(func=lambda m: m.text == "🚨 Shikoyat qilish")
-def report_btn(message):
-    uid = message.from_user.id
-    if is_in_chat(uid):
-        partner_id = partners.get(uid)
-        if partner_id:
-            bot.send_message(ADMIN_ID, f"🚨 Shikoyat yuborildi!\n\nShikoyat qiluvchi: {uid}\nShikoyat qilingan: {partner_id}")
-            bot.send_message(uid, "✅ Shikoyatingiz adminga yuborildi.")
-    else:
-        bot.send_message(uid, "Siz hozir suhbatasiz.", reply_markup=main_menu(uid))
-
 # === Relay ===
-@bot.message_handler(content_types=['text'])
-def relay_text(message):
+@bot.message_handler(content_types=['text','photo','video','document','audio','voice','sticker','animation'])
+def relay_all(message):
     uid = message.from_user.id
     if not is_in_chat(uid):
         return bot.send_message(uid, "Siz hozir suhbatasiz.", reply_markup=main_menu(uid))
     partner_id = partners.get(uid)
     if not partner_id:
         return
-    
-    # Agar partner "AI qiz" bo'lsa
-    if partner_id == 0:  # AI uchun maxsus ID
-        reply = ai_girl_response(message.text)
-        bot.send_message(uid, reply)
-    else:
-        try:
-            bot.copy_message(partner_id, message.chat.id, message.message_id)
-        except:
-            end_chat_for(uid, bot)
+    try:
+        bot.copy_message(partner_id, message.chat.id, message.message_id)
+    except:
+        end_chat_for(uid, bot)
 
 # === Run ===
 if __name__ == "__main__":
-    print("Anonim Love bot VPS’da ishga tushdi...")
+    print("Anonim Love bot PythonAnywhere’da ishga tushdi...")
     bot.infinity_polling(skip_pending=True, timeout=60, long_polling_timeout=60)
