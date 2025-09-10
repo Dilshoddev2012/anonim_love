@@ -1,3 +1,4 @@
+# bot.py  — tozalangan versiya
 import os
 import time
 import sqlite3
@@ -14,6 +15,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(mes
 TOKEN = os.getenv("ANONIM_TOKEN", "7549325175:AAF9teSMeEffbIG3Z0SKfhf1WGHWmYr2Cg8")
 ADMIN_ID = int(os.getenv("ANONIM_ADMIN_ID", "7661335658"))
 DB_FILE = os.getenv("ANONIM_DB_FILE", "anonim_love2.db")
+USERS_TXT = os.getenv("ANONIM_USERS_FILE", "users.txt")
 
 bot = telebot.TeleBot(TOKEN)
 
@@ -67,18 +69,32 @@ admin_temp = {}
 def now_iso():
     return datetime.utcnow().isoformat()
 
+def save_users_file():
+    try:
+        cur.execute("SELECT user_id FROM users")
+        rows = cur.fetchall()
+        with open(USERS_TXT, "w", encoding="utf-8") as f:
+            for r in rows:
+                f.write(str(r[0]) + "\n")
+    except Exception as e:
+        logging.exception("save_users_file error: %s", e)
+
 def set_user_gender(user_id, gender):
-    cur.execute("INSERT OR IGNORE INTO users(user_id, gender, joined_at, muted_until, slow_mode_until, preference, message_count, last_find_request) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (user_id, gender, now_iso(), "", "", "random", 0, ""))
+    ensure_user_row(user_id)
     cur.execute("UPDATE users SET gender=? WHERE user_id=?", (gender, user_id))
     conn.commit()
 
 def ensure_user_row(user_id):
+    """Ensure user exists. Returns True if newly created, False otherwise."""
     cur.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
     if not cur.fetchone():
         cur.execute("INSERT INTO users(user_id, gender, joined_at, muted_until, slow_mode_until, preference, message_count, last_find_request) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                     (user_id, "", now_iso(), "", "", "random", 0, ""))
         conn.commit()
+        # update users file
+        save_users_file()
+        return True
+    return False
 
 def set_user_preference(user_id, pref):
     ensure_user_row(user_id)
@@ -93,8 +109,7 @@ def get_user_preference(user_id):
 
 def get_user(user_id):
     cur.execute("SELECT user_id, gender, joined_at, muted_until, slow_mode_until, preference, message_count, last_find_request FROM users WHERE user_id=?", (user_id,))
-    r = cur.fetchone()
-    return r
+    return cur.fetchone()
 
 def connect_partners(a, b):
     cur.execute("INSERT OR REPLACE INTO partners(user_id, partner_id, connected_at) VALUES (?, ?, ?)", (a, b, now_iso()))
@@ -238,8 +253,8 @@ def notify_admin_report(rid, reporter, target, reason):
 def handle_start(m):
     user_id = m.from_user.id
     ensure_user_row(user_id)
-    cur.execute("SELECT user_id FROM users WHERE user_id=?", (user_id,))
-    if not cur.fetchone():
+    row = get_user(user_id)
+    if not row or not row[1]:
         bot.send_message(user_id, "Anonim Love ga xush kelibsiz! Sizning jinsingizni tanlang:", reply_markup=gender_kb())
     else:
         bot.send_message(user_id, "Xush kelibsiz! Asosiy menyu:", reply_markup=main_menu())
@@ -247,10 +262,7 @@ def handle_start(m):
 @bot.message_handler(func=lambda m: m.text in ["👤 Men erkakman", "👩 Men ayolman"])
 def handle_gender(m):
     user_id = m.from_user.id
-    if m.text == "👤 Men erkakman":
-        g = "male"
-    else:
-        g = "female"
+    g = "male" if m.text == "👤 Men erkakman" else "female"
     set_user_gender(user_id, g)
     bot.send_message(user_id, "Siz muvaffaqiyatli ro'yxatdan o'tdingiz. Asosiy menyuga qayting.", reply_markup=main_menu())
 
@@ -272,10 +284,6 @@ def handle_pref_change(m):
         set_user_preference(user_id, "random")
         bot.send_message(user_id, "✅ Endi random rejimda juft tanlanadi.", reply_markup=main_menu())
 
-@bot.message_handler(func=lambda m: m.text == "🔄 Jinsni o‘zgartirish")
-def handle_change_gender(m):
-    bot.send_message(m.chat.id, "Yangi jinsingizni tanlang:", reply_markup=gender_kb())
-
 @bot.message_handler(func=lambda m: m.text == "🔎 Juft topish")
 def handle_find(m):
     user_id = m.from_user.id
@@ -286,23 +294,15 @@ def handle_find(m):
     my_gender = row[1]
     pref = get_user_preference(user_id)
     set_last_find_request(user_id)
-    query = ""
-    params = ()
     if pref == "female":
-        query = "SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) AND gender='female' LIMIT 1"
-        params = (user_id,)
+        cur.execute("SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) AND gender='female' LIMIT 1", (user_id,))
     elif pref == "male":
-        query = "SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) AND gender='male' LIMIT 1"
-        params = (user_id,)
+        cur.execute("SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) AND gender='male' LIMIT 1", (user_id,))
     else:
-        query = "SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) AND gender!=? LIMIT 1"
-        params = (user_id, my_gender)
-    cur.execute(query, params)
+        cur.execute("SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) AND gender!=? LIMIT 1", (user_id, my_gender))
     r = cur.fetchone()
-    desired = None
-    if r:
-        desired = r[0]
-    else:
+    desired = r[0] if r else None
+    if not desired:
         cur.execute("SELECT user_id FROM users WHERE user_id!=? AND user_id NOT IN (SELECT user_id FROM partners) LIMIT 1", (user_id,))
         rr = cur.fetchone()
         if rr:
@@ -399,14 +399,14 @@ def admin_unmatched(m):
     if m.from_user.id != ADMIN_ID:
         return
     last_update = meta_get("unmatched_last_update")
-    do_update = True
     if last_update:
         try:
             last_dt = datetime.fromisoformat(last_update)
             if datetime.utcnow() - last_dt < timedelta(hours=24):
-                do_update = False
+                # still allowed to show cached result; but update timestamp anyway
+                pass
         except:
-            do_update = True
+            pass
     meta_set("unmatched_last_update", now_iso())
     unmatched = get_unmatched_users_within(24)
     if not unmatched:
@@ -423,7 +423,7 @@ def admin_ad_start(m):
     if m.from_user.id != ADMIN_ID:
         return
     admin_states[ADMIN_ID] = {"action": "awaiting_ad_text"}
-    bot.send_message(ADMIN_ID, "Reklama matnini yuboring. (Bot barcha foydalanuvchilarga reklama yuboradi).")
+    bot.send_message(ADMIN_ID, "Reklama matnini yuboring. (Yuborganingizdan so'ng reklama hozircha tasdiqsiz barcha foydalanuvchilarga jo'natiladi.)")
 
 @bot.message_handler(func=lambda m: m.text == "📊 Statistika")
 def admin_stats(m):
@@ -461,51 +461,75 @@ def admin_cb(c):
     if data.startswith("mute3_"):
         parts = data.split("_")
         if len(parts) >= 3:
-            rid = parts[1]
-            target = int(parts[2])
-            until = datetime.utcnow() + timedelta(days=3)
-            cur.execute("UPDATE users SET muted_until=? WHERE user_id=?", (until.isoformat(), target))
-            conn.commit()
-            bot.answer_callback_query(c.id, "Target 3 kunga mute qilindi.")
             try:
-                bot.send_message(target, "Siz 3 kunga moderator tomonidan mute qilindingiz. Agar izoh bermoqchi bo'lsangiz admin bilan bog'laning.")
+                target = int(parts[2])
+                until = datetime.utcnow() + timedelta(days=3)
+                cur.execute("UPDATE users SET muted_until=? WHERE user_id=?", (until.isoformat(), target))
+                conn.commit()
+                bot.answer_callback_query(c.id, "Target 3 kunga mute qilindi.")
+                try:
+                    bot.send_message(target, "Siz 3 kunga moderator tomonidan mute qilindingiz. Agar izoh bermoqchi bo'lsangiz admin bilan bog'laning.")
+                except:
+                    pass
             except:
-                pass
+                bot.answer_callback_query(c.id, "Xato target ID.")
     elif data.startswith("ban_"):
         parts = data.split("_")
         if len(parts) >= 3:
-            rid = parts[1]
-            target = int(parts[2])
-            cur.execute("DELETE FROM users WHERE user_id=?", (target,))
-            cur.execute("DELETE FROM partners WHERE user_id=?", (target,))
-            conn.commit()
-            bot.answer_callback_query(c.id, f"ID {target} ban qilindi (deleted).")
+            try:
+                target = int(parts[2])
+                cur.execute("DELETE FROM users WHERE user_id=?", (target,))
+                cur.execute("DELETE FROM partners WHERE user_id=?", (target,))
+                conn.commit()
+                save_users_file()
+                bot.answer_callback_query(c.id, f"ID {target} ban qilindi (deleted).")
+            except:
+                bot.answer_callback_query(c.id, "Xato ban operatsiyasi.")
     elif data.startswith("handled_"):
-        rid = int(data.split("_")[1])
-        cur.execute("UPDATE reports SET handled=1 WHERE id=?", (rid,))
-        conn.commit()
-        bot.answer_callback_query(c.id, f"Shikoyat ID={rid} ko'rib chiqildi.")
+        try:
+            rid = int(data.split("_")[1])
+            cur.execute("UPDATE reports SET handled=1 WHERE id=?", (rid,))
+            conn.commit()
+            bot.answer_callback_query(c.id, f"Shikoyat ID={rid} ko'rib chiqildi.")
+        except:
+            bot.answer_callback_query(c.id, "Xato.")
     elif data.startswith("admincall_"):
         parts = data.split("_")
         if len(parts) >= 2:
-            target = int(parts[1])
-            admin_states[ADMIN_ID] = {"action": "admincall_ask_msg", "target": target}
-            bot.send_message(ADMIN_ID, f"Siz {target} uchun xabar yozing (keyin tasdiqlaysiz):")
-            bot.answer_callback_query(c.id, "Foydalanuvchi uchun xabar yozing.")
+            try:
+                target = int(parts[1])
+                admin_states[ADMIN_ID] = {"action": "admincall_ask_msg", "target": target}
+                bot.send_message(ADMIN_ID, f"Siz {target} uchun xabar yozing (keyin tasdiqlaysiz):")
+                bot.answer_callback_query(c.id, "Foydalanuvchi uchun xabar yozing.")
+            except:
+                bot.answer_callback_query(c.id, "Xato target ID.")
+    else:
+        bot.answer_callback_query(c.id, "Noma'lum tugma.")
 
 @bot.message_handler(func=lambda m: True, content_types=['text'])
 def relay_or_handle(m):
     user_id = m.from_user.id
-    text = m.text.strip()
+    text = m.text.strip() if m.text else ""
+
+    # Admin flows
     if user_id == ADMIN_ID and user_id in admin_states:
         st = admin_states[user_id]
         if st.get("action") == "awaiting_ad_text":
-            admin_temp["ad_text"] = text
-            admin_states[user_id] = {"action": "awaiting_ad_confirm"}
-            kb = types.InlineKeyboardMarkup()
-            kb.add(types.InlineKeyboardButton("✅ Tasdiqlash (yuborish)", callback_data="ad_confirm_yes"))
-            kb.add(types.InlineKeyboardButton("❌ Bekor qilish", callback_data="ad_confirm_no"))
-            bot.send_message(ADMIN_ID, f"Reklama matni:\n\n{text}\n\nTasdiqlaysizmi?", reply_markup=kb)
+            ad_text = text
+            if not ad_text:
+                bot.send_message(ADMIN_ID, "Bo'sh reklama matni qabul qilinmaydi. Iltimos matn yuboring yoki /start bilan qaytib admin menyuga.")
+                return
+            save_ad(ADMIN_ID, ad_text)
+            uids = get_all_user_ids()
+            sent = 0
+            for uid in uids:
+                try:
+                    bot.send_message(uid, f"📣 Reklama:\n\n{ad_text}")
+                    sent += 1
+                except:
+                    pass
+            bot.send_message(ADMIN_ID, f"Reklama yuborildi. Foydalanuvchilar soni (taxmin): {sent}", reply_markup=admin_kb())
+            admin_states.pop(ADMIN_ID, None)
             return
         if st.get("action") == "admincall_ask_id":
             try:
@@ -531,6 +555,8 @@ def relay_or_handle(m):
         if st.get("action") == "admincall_confirm":
             bot.send_message(ADMIN_ID, "Iltimos inline tugmalardan foydalaning (tasdiqlash yoki bekor qilish).")
             return
+
+    # rate limiting
     slow_enabled_now = register_message_timestamp(user_id)
     if slow_enabled_now:
         bot.send_message(user_id, "Siz juda tez xabar yubordingiz — 30 daqiqalik slow-mode o'rnatildi. Keyinroq davom eting.")
@@ -538,6 +564,8 @@ def relay_or_handle(m):
     if is_in_slow_mode(user_id):
         bot.send_message(user_id, "Siz slow-mode ostidasiz: xabarlar 3 soniyali kechikish bilan jo'natiladi. Iltimos sabr qiling.")
         time.sleep(3)
+
+    # muted check
     row = get_user(user_id)
     if row and row[3]:
         try:
@@ -549,6 +577,8 @@ def relay_or_handle(m):
                     return
         except:
             pass
+
+    # admin back buttons
     if user_id == ADMIN_ID and text == "🔙 Orqaga":
         admin_states.pop(ADMIN_ID, None)
         bot.send_message(ADMIN_ID, "Admin menu:", reply_markup=admin_kb())
@@ -556,16 +586,18 @@ def relay_or_handle(m):
     if text == "🔙 Orqaga":
         bot.send_message(user_id, "Asosiy menyuga qaytildi.", reply_markup=main_menu())
         return
+
     partner = get_partner(user_id)
     if partner:
         try:
             increment_message_count(user_id)
             increment_message_count(partner)
-            bot.send_message(partner, f"Anonimdan xabar:\n\n{text}", reply_markup=in_chat_kb())
-            bot.send_message(user_id, "Xabar yuborildi (anonim).", reply_markup=in_chat_kb())
+            bot.send_message(partner, f"{text}", reply_markup=in_chat_kb())
+            bot.send_message(user_id, "Xabar yuborildi.", reply_markup=in_chat_kb())
         except Exception as e:
             bot.send_message(user_id, "Xato: xabarni yuborib bo'lmadi. Ehtimol suhbatdosh botni bloklagan yoki yo'qolgan.")
     else:
+        # admin quick text commands when not in chat
         if user_id == ADMIN_ID:
             if text == "📊 Statistika":
                 cur.execute("SELECT COUNT(*) FROM users")
@@ -597,53 +629,6 @@ def relay_or_handle(m):
                 return
         bot.send_message(user_id, "Asosiy menyu:", reply_markup=main_menu())
 
-@bot.callback_query_handler(func=lambda c: c.data and c.from_user.id == ADMIN_ID)
-def ad_and_admincall_cb(c):
-    data = c.data
-    if data == "ad_confirm_yes":
-        ad_text = admin_temp.get("ad_text", "")
-        if ad_text:
-            save_ad(ADMIN_ID, ad_text)
-            uids = get_all_user_ids()
-            sent = 0
-            for uid in uids:
-                try:
-                    bot.send_message(uid, f"📣 Reklama:\n\n{ad_text}")
-                    sent += 1
-                except:
-                    pass
-            bot.send_message(ADMIN_ID, f"Reklama yuborildi. Foydalanuvchilar soni (taxmin): {sent}", reply_markup=admin_kb())
-        else:
-            bot.send_message(ADMIN_ID, "Reklama matni topilmadi.")
-        admin_states.pop(ADMIN_ID, None)
-        admin_temp.pop("ad_text", None)
-        bot.answer_callback_query(c.id, "Reklama yuborildi.")
-    elif data == "ad_confirm_no":
-        admin_states.pop(ADMIN_ID, None)
-        admin_temp.pop("ad_text", None)
-        bot.send_message(ADMIN_ID, "Reklama bekor qilindi.", reply_markup=admin_kb())
-        bot.answer_callback_query(c.id, "Bekor qilindi.")
-    elif data == "admincall_send":
-        st = admin_states.get(ADMIN_ID)
-        if st and st.get("target") is not None:
-            tgt = st.get("target")
-            msg = admin_temp.get("admincall_msg", "")
-            try:
-                bot.send_message(tgt, f"Admindan xabar:\n\n{msg}")
-                bot.send_message(ADMIN_ID, f"Xabar {tgt} ga yuborildi.", reply_markup=admin_kb())
-            except Exception as e:
-                bot.send_message(ADMIN_ID, f"Xabarni yuborish mumkin bo'lmadi: {e}", reply_markup=admin_kb())
-        admin_states.pop(ADMIN_ID, None)
-        admin_temp.pop("admincall_msg", None)
-        bot.answer_callback_query(c.id, "AdminCall: yuborildi.")
-    elif data == "admincall_cancel":
-        admin_states.pop(ADMIN_ID, None)
-        admin_temp.pop("admincall_msg", None)
-        bot.send_message(ADMIN_ID, "AdminCall bekor qilindi.", reply_markup=admin_kb())
-        bot.answer_callback_query(c.id, "Bekor qilindi.")
-    else:
-        pass
-
 def stop_bot(signum, frame):
     logging.info("Signal %s received, stopping bot...", signum)
     try:
@@ -663,7 +648,16 @@ signal.signal(signal.SIGTERM, stop_bot)
 if __name__ == "__main__":
     logging.info("Anonim Love 2 prototype bot ishga tushmoqda...")
     try:
-        bot.infinity_polling(timeout=60, long_polling_timeout=60, skip_pending=True)
+        # safer call - don't pass unfamiliar kwargs that may not exist in some telebot versions
+        bot.infinity_polling(timeout=60)
+    except TypeError:
+        # fallback to simple polling if signature mismatches
+        try:
+            bot.infinity_polling()
+        except Exception as e:
+            logging.exception("Bot error: %s", e)
+            time.sleep(5)
+            raise
     except Exception as e:
         logging.exception("Bot error: %s", e)
         time.sleep(5)
